@@ -1,0 +1,93 @@
+{
+  "feature_importance": [
+    {
+      "feature": "range",
+      "importance": 0.2746369274955739
+    },
+    {
+      "feature": "volatility_5",
+      "importance": 0.25428011157192004
+    },
+    {
+      "feature": "volatility_10",
+      "importance": 0.18432268205734526
+    },
+    {
+      "feature": "volume_sma_5",
+      "importance": 0.13561502034878972
+    },
+    {
+      "feature": "close_vs_sma_10",
+      "importance": 0.037511686069428854
+    },
+    {
+      "feature": "close_vs_sma_20",
+      "importance": 0.01840944490761223
+    },
+    {
+      "feature": "volume_ratio",
+      "importance": 0.01573644161844404
+    },
+    {
+      "feature": "close_vs_sma_5",
+      "importance": 0.015136240624486179
+    },
+    {
+      "feature": "sma_5",
+      "importance": 0.01101250685717332
+    },
+    {
+      "feature": "roc_3",
+      "importance": 0.010269161784112904
+    },
+    {
+      "feature": "roc_10",
+      "importance": 0.010240132261260991
+    },
+    {
+      "feature": "sma_10",
+      "importance": 0.009725057461965147
+    },
+    {
+      "feature": "sma_20",
+      "importance": 0.00827717127340037
+    },
+    {
+      "feature": "roc_5",
+      "importance": 0.005178739759932062
+    },
+    {
+      "feature": "returns",
+      "importance": 0.005040016176051629
+    },
+    {
+      "feature": "body",
+      "importance": 0.003840136544159455
+    },
+    {
+      "feature": "rsi",
+      "importance": 0.0007685231883438405
+    }
+  ],
+  "strong_features": [
+    "range",
+    "volatility_5",
+    "volatility_10",
+    "volume_sma_5"
+  ],
+  "weak_features": [
+    "sma_10",
+    "sma_20",
+    "roc_5",
+    "returns",
+    "body",
+    "rsi"
+  ],
+  "top_80pct_features": [
+    "range",
+    "volatility_5",
+    "volatility_10",
+    "volume_sma_5"
+  ],
+  "analysis_time": "2025-12-28T14:47:31.933209"
+}

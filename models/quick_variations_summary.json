@@ -1,0 +1,148 @@
+{
+  "experiments": [
+    {
+      "experiment": "shallow_rf",
+      "timestamp": "2025-12-28T04:22:51.762059",
+      "model_params": {
+        "n_estimators": 60,
+        "max_depth": 5,
+        "min_samples_split": 20,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6253349295935238,
+        "f1": 0.5365924213286487,
+        "total_pnl_pct": 20.103465008807653,
+        "trades": 1113,
+        "win_rate": 1.0610961365678346
+      }
+    },
+    {
+      "experiment": "baseline_rf",
+      "timestamp": "2025-12-28T04:22:46.810165",
+      "model_params": {
+        "n_estimators": 38,
+        "max_depth": 8,
+        "min_samples_split": 15,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6236246508180834,
+        "f1": 0.5412820319137226,
+        "total_pnl_pct": 5.940773060740867,
+        "trades": 1562,
+        "win_rate": 0.7496798975672215
+      }
+    },
+    {
+      "experiment": "deep_rf",
+      "timestamp": "2025-12-28T04:22:50.179513",
+      "model_params": {
+        "n_estimators": 50,
+        "max_depth": 12,
+        "min_samples_split": 10,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6243657716207742,
+        "f1": 0.5509440265592623,
+        "total_pnl_pct": 4.677067539713509,
+        "trades": 2077,
+        "win_rate": 0.6297544535387578
+      }
+    },
+    {
+      "experiment": "minimal_features",
+      "timestamp": "2025-12-28T04:23:01.201916",
+      "model_params": {
+        "n_estimators": 50,
+        "max_depth": 6,
+        "min_samples_split": 20,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6263040875662733,
+        "f1": 0.5404694422512345,
+        "total_pnl_pct": 4.049892846945569,
+        "trades": 1419,
+        "win_rate": 0.7984496124031008
+      }
+    },
+    {
+      "experiment": "extended_features",
+      "timestamp": "2025-12-28T04:23:00.281623",
+      "model_params": {
+        "n_estimators": 38,
+        "max_depth": 8,
+        "min_samples_split": 15,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6262257696693273,
+        "f1": 0.5459453844601547,
+        "total_pnl_pct": 1.6651342738426056,
+        "trades": 1443,
+        "win_rate": 0.8586278586278586
+      }
+    },
+    {
+      "experiment": "extra_trees",
+      "timestamp": "2025-12-28T04:22:47.048340",
+      "model_params": {
+        "n_estimators": 50,
+        "max_depth": 8,
+        "min_samples_split": 15,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6204891397297759,
+        "f1": 0.5045256646180952,
+        "total_pnl_pct": -3.3818279933529705,
+        "trades": 645,
+        "win_rate": 0.6759689922480621
+      }
+    },
+    {
+      "experiment": "large_ensemble",
+      "timestamp": "2025-12-28T04:23:05.475335",
+      "model_params": {
+        "n_estimators": 100,
+        "max_depth": 8,
+        "min_samples_split": 15,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "holdout_metrics": {
+        "accuracy": 0.6232255857704806,
+        "f1": 0.5439842649335277,
+        "total_pnl_pct": -15.909540139397416,
+        "trades": 1578,
+        "win_rate": 0.7629911280101395
+      }
+    }
+  ],
+  "best": {
+    "experiment": "shallow_rf",
+    "timestamp": "2025-12-28T04:22:51.762059",
+    "model_params": {
+      "n_estimators": 60,
+      "max_depth": 5,
+      "min_samples_split": 20,
+      "random_state": 42,
+      "n_jobs": -1
+    },
+    "holdout_metrics": {
+      "accuracy": 0.6253349295935238,
+      "f1": 0.5365924213286487,
+      "total_pnl_pct": 20.103465008807653,
+      "trades": 1113,
+      "win_rate": 1.0610961365678346
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "experiments": [
+    {
+      "experiment": "ultra_rf",
+      "timestamp": "2025-12-28T03:23:53.039937",
+      "best_params": {
+        "model_type": "rf",
+        "n_estimators": 38,
+        "max_depth": 8,
+        "min_samples_split": 15
+      },
+      "best_val_score": 0.6177448353603103,
+      "holdout_metrics": {
+        "accuracy": 0.6236246508180834,
+        "f1": 0.5412820319137226,
+        "total_pnl_pct": 5.940773060740867,
+        "trades": 1562,
+        "win_rate": 0.7496798975672215
+      }
+    },
+    {
+      "experiment": "ultra_gb",
+      "timestamp": "2025-12-28T03:40:11.357678",
+      "best_params": {
+        "model_type": "rf",
+        "n_estimators": 38,
+        "max_depth": 8,
+        "min_samples_split": 15
+      },
+      "best_val_score": 0.6177448353603103,
+      "holdout_metrics": {
+        "accuracy": 0.6236246508180834,
+        "f1": 0.5412820319137226,
+        "total_pnl_pct": 5.940773060740867,
+        "trades": 1562,
+        "win_rate": 0.7496798975672215
+      }
+    },
+    {
+      "experiment": "ultra_aggressive",
+      "timestamp": "2025-12-28T03:56:27.547011",
+      "best_params": {
+        "model_type": "rf",
+        "n_estimators": 38,
+        "max_depth": 8,
+        "min_samples_split": 15
+      },
+      "best_val_score": 0.6177448353603103,
+      "holdout_metrics": {
+        "accuracy": 0.6236246508180834,
+        "f1": 0.5412820319137226,
+        "total_pnl_pct": 5.940773060740867,
+        "trades": 1562,
+        "win_rate": 0.7496798975672215
+      }
+    }
+  ],
+  "best": {
+    "experiment": "ultra_rf",
+    "timestamp": "2025-12-28T03:23:53.039937",
+    "best_params": {
+      "model_type": "rf",
+      "n_estimators": 38,
+      "max_depth": 8,
+      "min_samples_split": 15
+    },
+    "best_val_score": 0.6177448353603103,
+    "holdout_metrics": {
+      "accuracy": 0.6236246508180834,
+      "f1": 0.5412820319137226,
+      "total_pnl_pct": 5.940773060740867,
+      "trades": 1562,
+      "win_rate": 0.7496798975672215
+    }
+  },
+  "completed_at": "2025-12-28T03:56:27.552640"
+}

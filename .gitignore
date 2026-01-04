@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project specific
+.env
+*.log
+training*.log
+
+# Claude
+.claude/
+
+# Data (too large for git)
+data/historical/*.csv
+data/historical/*.txt
+!data/historical/.gitkeep
+
+# Models (too large for git)
+models/*.joblib
+models/*/
+!models/.gitkeep
+
+# Output
+output/
+!output/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db

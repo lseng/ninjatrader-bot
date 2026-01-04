@@ -1,0 +1,166 @@
+{
+  "completed_at": "2025-12-28T04:16:18.664414",
+  "experiments": [
+    {
+      "experiment": "thresh_15bp_look3",
+      "timestamp": "2025-12-28T04:05:10.945386",
+      "config": {
+        "threshold": 0.0015,
+        "lookahead": 3
+      },
+      "best_params": {
+        "n_estimators": 20,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 12
+      },
+      "best_val_score": 0.8467987632600578,
+      "holdout_metrics": {
+        "accuracy": 0.8383933407451751,
+        "f1": 0.7823077235861827,
+        "total_pnl_pct": -8.088954992300334,
+        "trades": 781,
+        "win_rate": 0.586427656850192,
+        "max_drawdown_pct": -13.992773445380847
+      }
+    },
+    {
+      "experiment": "thresh_20bp_look5",
+      "timestamp": "2025-12-28T04:16:18.647832",
+      "config": {
+        "threshold": 0.002,
+        "lookahead": 5
+      },
+      "best_params": {
+        "n_estimators": 21,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 11
+      },
+      "best_val_score": 0.8489897075068255,
+      "holdout_metrics": {
+        "accuracy": 0.8388209470053308,
+        "f1": 0.7815351319071233,
+        "total_pnl_pct": -10.14930808694724,
+        "trades": 700,
+        "win_rate": 0.5914285714285714,
+        "max_drawdown_pct": -14.90522398728995
+      }
+    },
+    {
+      "experiment": "thresh_20bp_look3",
+      "timestamp": "2025-12-28T04:08:03.504060",
+      "config": {
+        "threshold": 0.002,
+        "lookahead": 3
+      },
+      "best_params": {
+        "n_estimators": 23,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 13
+      },
+      "best_val_score": 0.9069189724716896,
+      "holdout_metrics": {
+        "accuracy": 0.8928418712049945,
+        "f1": 0.8521767342291728,
+        "total_pnl_pct": -13.98672878066084,
+        "trades": 412,
+        "win_rate": 0.5898058252427184,
+        "max_drawdown_pct": -14.722354468629916
+      }
+    },
+    {
+      "experiment": "thresh_10bp_look10",
+      "timestamp": "2025-12-28T04:13:36.836406",
+      "config": {
+        "threshold": 0.001,
+        "lookahead": 10
+      },
+      "best_params": {
+        "n_estimators": 21,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 11
+      },
+      "best_val_score": 0.554428023312673,
+      "holdout_metrics": {
+        "accuracy": 0.5464522933949086,
+        "f1": 0.4859059079919074,
+        "total_pnl_pct": -27.461743544124097,
+        "trades": 4929,
+        "win_rate": 0.9612497463988638,
+        "max_drawdown_pct": -41.61016072408125
+      }
+    },
+    {
+      "experiment": "thresh_10bp_look5",
+      "timestamp": "2025-12-28T04:10:54.969832",
+      "config": {
+        "threshold": 0.001,
+        "lookahead": 5
+      },
+      "best_params": {
+        "n_estimators": 23,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 13
+      },
+      "best_val_score": 0.6613070073841574,
+      "holdout_metrics": {
+        "accuracy": 0.6544656347102255,
+        "f1": 0.5911736946579857,
+        "total_pnl_pct": -29.19925859780538,
+        "trades": 3666,
+        "win_rate": 0.7206764866339335,
+        "max_drawdown_pct": -40.10024920691283
+      }
+    },
+    {
+      "experiment": "thresh_5bp_look3",
+      "timestamp": "2025-12-28T04:02:31.010009",
+      "config": {
+        "threshold": 0.0005,
+        "lookahead": 3
+      },
+      "best_params": {
+        "n_estimators": 20,
+        "max_depth": 12,
+        "min_samples_split": 30,
+        "min_samples_leaf": 12
+      },
+      "best_val_score": 0.559551164268226,
+      "holdout_metrics": {
+        "accuracy": 0.5358476581430486,
+        "f1": 0.4875900016550582,
+        "total_pnl_pct": -41.612341836840095,
+        "trades": 6171,
+        "win_rate": 0.9158969372873116,
+        "max_drawdown_pct": -49.930371707137056
+      }
+    }
+  ],
+  "best": {
+    "experiment": "thresh_15bp_look3",
+    "timestamp": "2025-12-28T04:05:10.945386",
+    "config": {
+      "threshold": 0.0015,
+      "lookahead": 3
+    },
+    "best_params": {
+      "n_estimators": 20,
+      "max_depth": 12,
+      "min_samples_split": 30,
+      "min_samples_leaf": 12
+    },
+    "best_val_score": 0.8467987632600578,
+    "holdout_metrics": {
+      "accuracy": 0.8383933407451751,
+      "f1": 0.7823077235861827,
+      "total_pnl_pct": -8.088954992300334,
+      "trades": 781,
+      "win_rate": 0.586427656850192,
+      "max_drawdown_pct": -13.992773445380847
+    }
+  }
+}
