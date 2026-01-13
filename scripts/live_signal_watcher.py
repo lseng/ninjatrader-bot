@@ -91,7 +91,20 @@ from scripts.smc_analysis import (
 )
 
 from scripts.audio_alerts import speak_signal, VOICES
+from scripts.discovered_strategies import (
+    calculate_contracts, get_position_info, get_contract_value
+)
 import re
+
+# ===========================================================================
+# POSITION SIZING CONFIG - MES Scaling
+# ===========================================================================
+# Rule: +5 contracts every time balance doubles (2x)
+# Update CURRENT_BALANCE as your account grows!
+
+CURRENT_BALANCE = 1000.0      # <-- UPDATE THIS WITH YOUR ACTUAL BALANCE
+STARTING_BALANCE = 1000.0     # Base for scaling calculation
+CONTRACT_TYPE = 'MES'         # MES = $5/point, ES = $50/point
 
 
 def get_live_price(filepath):
@@ -254,17 +267,34 @@ def beep():
     print('\a', end='', flush=True)  # Terminal bell
 
 
-def format_signal(sig: dict) -> str:
-    """Format a signal for display"""
+def format_signal(sig: dict, balance: float = None) -> str:
+    """Format a signal for display with position sizing"""
     arrow = ">>>" if sig['direction'] == 'LONG' else "<<<"
+
+    # Get position sizing
+    bal = balance or CURRENT_BALANCE
+    pos_info = get_position_info(bal, STARTING_BALANCE, CONTRACT_TYPE)
+    contracts = pos_info['contracts']
+    contract_val = pos_info['contract_value']
+
+    # Calculate dollar risk
+    risk_pts = sig['risk']
+    risk_dollars = risk_pts * contract_val * contracts
+    target_pts = abs(sig['take_profit'] - sig['entry'])
+    target_dollars = target_pts * contract_val * contracts
+
     return f"""
-{'='*50}
+{'='*60}
   {arrow} [{sig['strategy']}] {sig['direction']} - {sig['confidence']}% confidence
-{'='*50}
+{'='*60}
+  POSITION: {contracts} {CONTRACT_TYPE} contracts (${bal:,.0f} balance)
   Entry:  {sig['entry']:.2f}
-  Stop:   {sig['stop_loss']:.2f} ({sig['risk']:.2f} pts = ${sig['risk'] * 50:.0f} ES / ${sig['risk'] * 5:.0f} MES)
-  Target: {sig['take_profit']:.2f} (R:R = 1:{sig['rr']:.1f})
+  Stop:   {sig['stop_loss']:.2f} ({risk_pts:.2f} pts = ${risk_dollars:,.0f})
+  Target: {sig['take_profit']:.2f} ({target_pts:.2f} pts = ${target_dollars:,.0f})
+  R:R:    1:{sig['rr']:.1f}
   Reason: {sig['reasoning']}
+
+  Next scale: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']} contracts
 """
 
 
@@ -405,15 +435,26 @@ def watch_signals(log_path: str, interval: int = 60, min_confidence: int = 70,
             # Current status
             print(f"\n{CYAN}[{pst_time} PST]{RESET} {YELLOW}{session['current']}{RESET} | Price: {WHITE}{current_price:.2f}{RESET}")
 
+            # Get position sizing
+            pos_info = get_position_info(CURRENT_BALANCE, STARTING_BALANCE, CONTRACT_TYPE)
+            contracts = pos_info['contracts']
+            contract_val = pos_info['contract_value']
+
+            print(f"\n{CYAN}POSITION SIZE:{RESET} {contracts} {CONTRACT_TYPE} @ ${CURRENT_BALANCE:,.0f} (next: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']})")
+
             if signals:
                 top = signals[0]
                 sig_color = GREEN if top['direction'] == 'LONG' else RED
                 risk_pts = top['risk']
+                risk_dollars = risk_pts * contract_val * contracts
+                target_pts = abs(top['take_profit'] - top['entry'])
+                target_dollars = target_pts * contract_val * contracts
+
                 print(f"\n{BRIGHT}CURRENT SIGNAL:{RESET}")
                 print(f"  {sig_color}{BRIGHT}{top['direction']}{RESET} {top['confidence']}% [{top['strategy']}]")
                 print(f"  Entry:  {WHITE}{top['entry']:.2f}{RESET}")
-                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_pts*50:.0f} ES / ${risk_pts*5:.0f} MES)")
-                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET}")
+                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_dollars:,.0f})")
+                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_dollars:,.0f})")
                 print(f"  R:R:    {top['rr']:.1f}")
             else:
                 print(f"\n{WHITE}No active signal - waiting for setup{RESET}")
@@ -643,16 +684,26 @@ def watch_realtime(log_path: str, min_confidence: int = 70,
                 sig_color = GREEN if top['direction'] == 'LONG' else RED
                 risk_pts = top['risk']
 
+                # Get position sizing
+                pos_info = get_position_info(CURRENT_BALANCE, STARTING_BALANCE, CONTRACT_TYPE)
+                contracts = pos_info['contracts']
+                contract_val = pos_info['contract_value']
+                risk_dollars = risk_pts * contract_val * contracts
+                target_pts = abs(top['take_profit'] - top['entry'])
+                target_dollars = target_pts * contract_val * contracts
+
                 # Print FIRST (immediate visual feedback)
                 print(f"\n{BRIGHT}{YELLOW}{'!'*60}{RESET}")
                 print(f"  {BRIGHT}NEW ALERT #{alert_count}{RESET} @ {pst_time}")
                 print(f"{BRIGHT}{YELLOW}{'!'*60}{RESET}")
                 print(f"  {sig_color}{BRIGHT}{top['direction']}{RESET} {top['confidence']}% [{top['strategy']}]")
+                print(f"  {CYAN}POSITION: {contracts} {CONTRACT_TYPE} @ ${CURRENT_BALANCE:,.0f}{RESET}")
                 print(f"  Entry:  {WHITE}{top['entry']:.2f}{RESET}")
-                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_pts*50:.0f} ES)")
-                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET}")
+                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_dollars:,.0f})")
+                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_dollars:,.0f})")
                 print(f"  R:R:    {top['rr']:.1f}")
                 print(f"  Reason: {top['reasoning']}")
+                print(f"  {MAGENTA}Next scale: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']} contracts{RESET}")
                 print(f"\n  {YELLOW}{BRIGHT}>>> Press [T] to TAKE or [S] to SKIP <<<{RESET}\n", flush=True)
 
                 # Audio AFTER text (so you see it while hearing it)
