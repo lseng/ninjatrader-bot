@@ -3,32 +3,41 @@
 Live Signal Watcher - Monitors for high-confidence trading signals
 
 ================================================================================
-CURRENT LIVE CONFIGURATION (as of 2026-01-12)
+CURRENT LIVE CONFIGURATION (as of 2026-01-13)
 ================================================================================
 
-ACTIVE SIGNALS:
-  - CISD with R:R >= 5.0 (primary signal, best during ETH/overnight)
-  - 4H Range false breakouts
-  - SMC confluence (Order Blocks, Breakers, Inducement Traps)
+ACTIVE STRATEGIES:
+  1. Williams Fractals (+$61,650, 28% WR) - Best overall profit
+  2. Gap Continuation (+$25,787, 2.49 PF) - Best profit factor
+  3. London Mean Reversion (+$42,044) - Best session strategy
+  4. SMC (Order Blocks, Breakers, Inducement) - Confluence signals
+
+REMOVED:
+  - CISD (moved to discovered_strategies if needed)
+  - 4H Range (moved to discovered_strategies if needed)
+  - Position scaling (disabled for now)
 
 AUDIO ALERTS:
   - Airport chime + voice announcement
   - Says: direction, strategy, entry price, stop, target
 
+DATA SOURCES:
+  - --api mode: Direct TopstepX API WebSocket connection (recommended)
+  - --realtime mode: Tails fractal_bot log file
+  - default mode: Polls fractal_bot log file at interval
+
 USAGE:
-    python scripts/live_signal_watcher.py --realtime
+    python scripts/live_signal_watcher.py --api                    # Direct API (recommended)
+    python scripts/live_signal_watcher.py --realtime               # Tail log file
 
 ================================================================================
 
 Runs continuously, checks every N seconds, and alerts when:
 - New high-confidence signal appears
-- 4H Range setup triggers
-- Price enters key zones (OB, breaker, etc.)
-
-TIMEZONE HANDLING:
-- Bot logs are in PST (Pacific)
-- 4H Range strategy uses NY time (Eastern)
-- NY = PST + 3 hours
+- Williams Fractal forms
+- Gap continuation/fade setup
+- London session mean reversion
+- SMC zones (OB, breaker, etc.)
 
 Usage:
     python scripts/live_signal_watcher.py
@@ -42,7 +51,11 @@ import os
 import time
 import argparse
 import logging
+import asyncio
 from datetime import datetime, timedelta
+from collections import deque
+from dataclasses import dataclass
+from typing import Optional
 
 # Non-blocking keyboard input
 if sys.platform == 'win32':
@@ -81,30 +94,687 @@ WHITE = Fore.WHITE
 BRIGHT = Style.BRIGHT
 RESET = Style.RESET_ALL
 
-# Add parent to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent to path for imports (AFTER topstep-trading-bot for correct module resolution)
+NINJATRADER_BOT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Add topstep-trading-bot to path FIRST for API access
+TOPSTEP_BOT_PATH = r'C:\Users\leone\topstep-trading-bot'
+if TOPSTEP_BOT_PATH not in sys.path:
+    sys.path.insert(0, TOPSTEP_BOT_PATH)
+
+# Suppress noisy API logging (loguru) BEFORE imports
+try:
+    from loguru import logger as loguru_logger
+    loguru_logger.disable('src.api')
+    loguru_logger.disable('src.api.client')
+    loguru_logger.disable('src.api.streaming')
+except ImportError:
+    pass
+
+# TopstepX API imports (optional - only needed for --api mode)
+TOPSTEP_API_AVAILABLE = False
+TOPSTEP_API_KEY = None
+TOPSTEP_USERNAME = None
+TopstepXClient = None
+MarketDataStream = None
+try:
+    import os as _os
+    from dotenv import load_dotenv
+    _env_path = _os.path.join(TOPSTEP_BOT_PATH, '.env')
+    load_dotenv(_env_path, override=True)
+    TOPSTEP_API_KEY = _os.getenv('TOPSTEPX_API_KEY') or _os.getenv('API_KEY')
+    TOPSTEP_USERNAME = _os.getenv('TOPSTEPX_USERNAME') or _os.getenv('USERNAME')
+
+    from src.api.client import TopstepXClient
+    from src.api.streaming import MarketDataStream
+    TOPSTEP_API_AVAILABLE = True
+except ImportError:
+    pass  # API not available, will use log file mode
+
+# Now add ninjatrader-bot path for local scripts
+if NINJATRADER_BOT_PATH not in sys.path:
+    sys.path.insert(0, NINJATRADER_BOT_PATH)
 
 from scripts.smc_analysis import (
-    parse_bars, get_high_confidence_signals, get_4hour_range_signal,
-    calculate_4hour_range, analyze_4hour_range_strategy,
+    parse_bars, get_high_confidence_signals,
     get_session_info
 )
 
 from scripts.audio_alerts import speak_signal, VOICES
 from scripts.discovered_strategies import (
-    calculate_contracts, get_position_info, get_contract_value
+    detect_williams_fractals,
+    detect_gap_signal,
+    detect_london_mean_reversion
 )
 import re
 
 # ===========================================================================
-# POSITION SIZING CONFIG - MES Scaling
+# ACTIVE STRATEGIES (as of 2026-01-13)
 # ===========================================================================
-# Rule: +5 contracts every time balance doubles (2x)
-# Update CURRENT_BALANCE as your account grows!
+# 1. Williams Fractals (+$61,650, 28% WR) - Best overall profit
+# 2. Gap Continuation (+$25,787, 2.49 PF) - Best profit factor
+# 3. London Mean Reversion (+$42,044) - Best session strategy
+# 4. SMC (Order Blocks, Breakers, Inducement) - Confluence signals
+# ===========================================================================
 
-CURRENT_BALANCE = 1000.0      # <-- UPDATE THIS WITH YOUR ACTUAL BALANCE
-STARTING_BALANCE = 1000.0     # Base for scaling calculation
-CONTRACT_TYPE = 'MES'         # MES = $5/point, ES = $50/point
+# ===========================================================================
+# LOGGING PATHS (must be defined before classes that use them)
+# ===========================================================================
+ALERT_LOG_DIR = r'C:\Users\leone\ninjatrader-bot\logs'
+os.makedirs(ALERT_LOG_DIR, exist_ok=True)
+
+# ===========================================================================
+# BAR CLASS FOR API MODE
+# ===========================================================================
+@dataclass
+class APIBar:
+    """Bar data structure matching smc_analysis expectations.
+
+    Must match: Bar = namedtuple('Bar', ['idx', 'O', 'H', 'L', 'C', 'color', 'body'])
+    """
+    timestamp: datetime
+    O: float  # Open
+    H: float  # High
+    L: float  # Low
+    C: float  # Close
+    volume: int = 0
+    idx: int = 0  # Bar index - required by smc_analysis
+
+    @property
+    def color(self) -> str:
+        """Return bar color based on close vs open."""
+        return 'GREEN' if self.C >= self.O else 'RED'
+
+    @property
+    def body(self) -> float:
+        """Return the absolute body size."""
+        return abs(self.C - self.O)
+
+    @property
+    def body_size(self) -> float:
+        """Return the absolute body size (alias for body)."""
+        return abs(self.C - self.O)
+
+    @property
+    def upper_wick(self) -> float:
+        """Return upper wick size."""
+        return self.H - max(self.O, self.C)
+
+    @property
+    def lower_wick(self) -> float:
+        """Return lower wick size."""
+        return min(self.O, self.C) - self.L
+
+    @property
+    def range(self) -> float:
+        """Return total bar range."""
+        return self.H - self.L
+
+
+class TopstepXSignalWatcher:
+    """
+    Signal watcher that connects directly to TopstepX API.
+
+    Receives real-time market data via WebSocket and generates signals
+    using the same strategies as the log-based watcher.
+
+    Bar data is saved to disk so restarts don't lose history.
+    """
+
+    # File to persist bar data
+    BAR_CACHE_FILE = os.path.join(ALERT_LOG_DIR, 'bar_cache.json')
+
+    # Tick data file - appends forever, never deleted
+    TICK_DATA_FILE = os.path.join(ALERT_LOG_DIR, 'tick_data.csv')
+
+    def __init__(
+        self,
+        min_confidence: int = 70,
+        voice: str = 'aria',
+        silent: bool = False,
+        bar_seconds: int = 300,  # 5-minute bars
+    ):
+        self.min_confidence = min_confidence
+        self.voice = voice
+        self.silent = silent
+        self.bar_seconds = bar_seconds
+
+        # API connections
+        self._client: Optional[TopstepXClient] = None
+        self._market_stream: Optional[MarketDataStream] = None
+        self.contract_id: Optional[str] = None
+
+        # Bar building - load from cache if available
+        self._bars: deque = deque(maxlen=250)
+        self._current_bar: Optional[APIBar] = None
+        self._bar_start_time: Optional[datetime] = None
+        self._current_price: float = 0.0
+        self._last_bar_save: Optional[datetime] = None
+
+        # Load cached bars on init
+        self._load_bar_cache()
+
+        # Initialize tick data file
+        self._init_tick_file()
+        self._tick_file_handle = None
+
+        # Signal tracking
+        self._last_signal_hash: Optional[str] = None
+        self._alert_count: int = 0
+        self._alert_history: list = []
+        self._pending_signal: Optional[dict] = None
+        self._active_trade: Optional[dict] = None
+        self._skipped_signal_hash: Optional[str] = None
+
+        # State
+        self._is_running: bool = False
+
+    def _load_bar_cache(self):
+        """Load bar history from disk cache."""
+        try:
+            if os.path.exists(self.BAR_CACHE_FILE):
+                import json
+                with open(self.BAR_CACHE_FILE, 'r') as f:
+                    data = json.load(f)
+
+                for i, bar_data in enumerate(data.get('bars', [])):
+                    bar = APIBar(
+                        timestamp=datetime.fromisoformat(bar_data['timestamp']),
+                        O=bar_data['O'],
+                        H=bar_data['H'],
+                        L=bar_data['L'],
+                        C=bar_data['C'],
+                        volume=bar_data.get('volume', 0),
+                        idx=bar_data.get('idx', i),
+                    )
+                    self._bars.append(bar)
+        except Exception:
+            pass
+
+    def _save_bar_cache(self):
+        """Save bar history to disk cache."""
+        try:
+            import json
+            bars_data = []
+            for bar in self._bars:
+                bars_data.append({
+                    'timestamp': bar.timestamp.isoformat(),
+                    'O': bar.O,
+                    'H': bar.H,
+                    'L': bar.L,
+                    'C': bar.C,
+                    'volume': bar.volume,
+                    'idx': bar.idx,
+                })
+
+            with open(self.BAR_CACHE_FILE, 'w') as f:
+                json.dump({'bars': bars_data, 'saved_at': datetime.now().isoformat()}, f)
+
+        except Exception as e:
+            pass  # Silent fail on save
+
+    def _init_tick_file(self):
+        """Initialize tick data CSV file with headers if needed."""
+        try:
+            if not os.path.exists(self.TICK_DATA_FILE) or os.path.getsize(self.TICK_DATA_FILE) == 0:
+                with open(self.TICK_DATA_FILE, 'w') as f:
+                    f.write('timestamp,price,volume,type\n')
+        except Exception:
+            pass
+
+    def _log_tick(self, price: float, volume: int = 0, tick_type: str = 'Q'):
+        """Append a tick to the CSV file.
+
+        Args:
+            price: Tick price
+            volume: Trade volume (0 for quotes)
+            tick_type: 'Q' for quote, 'T' for trade
+        """
+        try:
+            timestamp = datetime.now().isoformat(timespec='milliseconds')
+            with open(self.TICK_DATA_FILE, 'a') as f:
+                f.write(f'{timestamp},{price},{volume},{tick_type}\n')
+        except Exception:
+            pass  # Silent fail - don't interrupt trading
+
+    async def start(self):
+        """Start the signal watcher with direct API connection."""
+        if not TOPSTEP_API_AVAILABLE:
+            print(f"{RED}TopstepX API not available.{RESET}")
+            return
+
+        print(f"{CYAN}Connecting...{RESET}", end=' ', flush=True)
+
+        # Initialize and authenticate
+        self._client = TopstepXClient(
+            api_key=TOPSTEP_API_KEY,
+            username=TOPSTEP_USERNAME,
+            environment="LIVE",
+        )
+
+        if not await self._client.authenticate():
+            print(f"{RED}Auth failed!{RESET}")
+            return
+
+        accounts = await self._client.get_accounts()
+        if not accounts:
+            print(f"{RED}No accounts!{RESET}")
+            return
+
+        account_id = accounts[0].id
+        contracts = await self._client.get_contracts("MES", account_id)
+        if not contracts:
+            print(f"{RED}No MES contract!{RESET}")
+            return
+
+        self.contract_id = contracts[0].id
+
+        # Connect to market data
+        self._market_stream = MarketDataStream(
+            token=self._client._token,
+            on_quote_callback=self._on_quote,
+            on_trade_callback=self._on_trade,
+        )
+
+        await self._market_stream.connect()
+        await self._market_stream.subscribe(self.contract_id)
+        print(f"{GREEN}Connected!{RESET} [{len(self._bars)} bars cached]")
+        print(f"{YELLOW}[T]=Take [S]=Skip [X]=Exit | Ctrl+C=Quit{RESET}\n")
+
+        # Log startup (to file only)
+        alert_logger.info("="*40)
+        alert_logger.info(f"STARTED | {self.contract_id} | {self.min_confidence}% min")
+        alert_logger.info("="*40)
+
+        # Main loop - process signals every second for real-time responsiveness
+        self._is_running = True
+        self._last_signal_check = datetime.now()
+        self._last_reconnect_check = datetime.now()
+        self._connection_start = datetime.now()
+        reconnect_hours = 20  # Reconnect before 24hr token expiry
+
+        try:
+            while self._is_running:
+                # Check keyboard
+                key = get_key()
+                if key:
+                    self._handle_key(key)
+
+                now = datetime.now()
+
+                # Process signals every second
+                if (now - self._last_signal_check).total_seconds() >= 1.0:
+                    self._process_signals()
+                    self._last_signal_check = now
+
+                # Check if we need to reconnect (every hour, reconnect after 20hrs)
+                if (now - self._last_reconnect_check).total_seconds() >= 3600:
+                    self._last_reconnect_check = now
+                    hours_connected = (now - self._connection_start).total_seconds() / 3600
+
+                    if hours_connected >= reconnect_hours:
+                        print(f"\n{YELLOW}[Auto-reconnect] Token refresh after {hours_connected:.1f} hours...{RESET}")
+                        alert_logger.info(f"AUTO-RECONNECT | Token refresh after {hours_connected:.1f} hours")
+
+                        # Disconnect and reconnect
+                        await self._reconnect()
+                        self._connection_start = datetime.now()
+
+                    # Also check if stream disconnected unexpectedly
+                    elif self._market_stream and not self._market_stream.is_connected:
+                        print(f"\n{YELLOW}[Auto-reconnect] Stream disconnected, reconnecting...{RESET}")
+                        alert_logger.info("AUTO-RECONNECT | Stream disconnected")
+                        await self._reconnect()
+
+                await asyncio.sleep(0.05)  # 50ms for responsive keyboard
+
+        except KeyboardInterrupt:
+            print(f"\n\n{YELLOW}Stopped. Alerts: {self._alert_count}{RESET}")
+            alert_logger.info(f"WATCHER STOPPED | Alerts: {self._alert_count}")
+        finally:
+            await self.stop()
+
+    async def stop(self):
+        """Stop and disconnect."""
+        self._is_running = False
+        if self._market_stream:
+            await self._market_stream.disconnect()
+        if self._client and self._client._http_client:
+            await self._client._http_client.aclose()
+
+    async def _reconnect(self):
+        """Reconnect to API and market stream."""
+        try:
+            # Disconnect existing
+            if self._market_stream:
+                await self._market_stream.disconnect()
+
+            # Re-authenticate
+            if not await self._client.authenticate():
+                print(f"{RED}[Reconnect] Authentication failed!{RESET}")
+                return False
+
+            # Reconnect market stream with new token
+            self._market_stream = MarketDataStream(
+                token=self._client._token,
+                on_quote_callback=self._on_quote,
+                on_trade_callback=self._on_trade,
+            )
+            await self._market_stream.connect()
+            await self._market_stream.subscribe(self.contract_id)
+
+            print(f"{GREEN}[Reconnect] Success - back online{RESET}")
+            return True
+
+        except Exception as e:
+            print(f"{RED}[Reconnect] Error: {e}{RESET}")
+            alert_logger.error(f"RECONNECT FAILED | {e}")
+            return False
+
+    def _on_quote(self, data):
+        """Handle quote update from WebSocket.
+
+        SignalR sends: [contract_id, {quote_data}]
+        Quote format: {'lastPrice': 7002.5, 'bestBid': 7002.5, 'bestAsk': 7002.75, ...}
+        """
+        try:
+            # Handle list format from SignalR
+            if isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
+                quote = data[1]
+            elif isinstance(data, dict):
+                quote = data
+            else:
+                return
+
+            # Extract price - lastPrice is the most recent trade price
+            price = quote.get('lastPrice') or quote.get('bestBid') or quote.get('bestAsk')
+            if price:
+                self._current_price = float(price)
+                self._update_bar(self._current_price)
+                # Log tick to file (forever)
+                self._log_tick(self._current_price, 0, 'Q')
+        except Exception as e:
+            pass  # Ignore malformed quotes
+
+    def _on_trade(self, data):
+        """Handle trade print from WebSocket.
+
+        SignalR sends: [contract_id, [{trade1}, {trade2}, ...]]
+        Trade format: {'price': 7002.75, 'volume': 2, ...}
+        """
+        try:
+            # Handle list format from SignalR
+            if isinstance(data, list) and len(data) >= 2:
+                trades = data[1]
+                # Trades come as a list of trade objects
+                if isinstance(trades, list) and trades:
+                    # Log ALL trades in the batch (not just last)
+                    for trade in trades:
+                        price = trade.get('price')
+                        volume = trade.get('volume', 0)
+                        if price:
+                            self._current_price = float(price)
+                            self._update_bar(self._current_price)
+                            # Log tick to file (forever)
+                            self._log_tick(self._current_price, volume, 'T')
+        except Exception as e:
+            pass
+
+    def _update_bar(self, price: float):
+        """Update current bar with new price tick."""
+        now = datetime.now()
+
+        # Start new bar if needed
+        if self._bar_start_time is None:
+            self._start_new_bar(price, now)
+            return
+
+        # Check if bar is complete
+        elapsed = (now - self._bar_start_time).total_seconds()
+        if elapsed >= self.bar_seconds:
+            # Close current bar and add to history
+            if self._current_bar:
+                self._bars.append(self._current_bar)
+                # Save to cache every bar (so restarts resume instantly)
+                self._save_bar_cache()
+            # Start new bar
+            self._start_new_bar(price, now)
+            return
+
+        # Update current bar with new tick
+        if self._current_bar:
+            self._current_bar.H = max(self._current_bar.H, price)
+            self._current_bar.L = min(self._current_bar.L, price)
+            self._current_bar.C = price
+
+    def _start_new_bar(self, price: float, timestamp: datetime):
+        """Start a new bar."""
+        # idx is the next index after all existing bars
+        next_idx = len(self._bars)
+        self._current_bar = APIBar(
+            timestamp=timestamp,
+            O=price,
+            H=price,
+            L=price,
+            C=price,
+            volume=0,
+            idx=next_idx,
+        )
+        self._bar_start_time = timestamp
+
+    def _process_signals(self):
+        """Process signals when a bar completes."""
+        pst_time = get_pst_time().strftime('%H:%M:%S')
+        session = get_session_for_ny_time()
+
+        # Show status even during warmup - different thresholds for different strategies
+        bar_count = len(self._bars)
+        if bar_count < 10:
+            bars_needed = 10 - bar_count
+            print(f"\r{CYAN}[{pst_time}]{RESET} {session['current']} | {WHITE}{self._current_price:.2f}{RESET} | Warming up... {bar_count} bars ({bars_needed} more for SMC)    ", end='', flush=True)
+            return
+
+        # Show which strategies are active based on bar count
+        active_strats = ['SMC']
+        if bar_count >= 20:
+            active_strats.append('London')
+        if bar_count >= 150:
+            active_strats.append('Williams')
+
+        # Convert bars to list for strategy functions
+        bars_list = list(self._bars)
+        if self._current_bar:
+            bars_list.append(self._current_bar)
+
+        # Check active trade status
+        if self._active_trade:
+            self._check_trade_status(bars_list[-1].C if bars_list else self._current_price)
+            return  # Don't generate new signals while in trade
+
+        # Check pending signal
+        if self._pending_signal:
+            self._show_pending_status()
+            return
+
+        # Get SMC signals
+        signals = get_high_confidence_signals(
+            bars_list,
+            min_confidence=self.min_confidence,
+            live_price=self._current_price
+        )
+
+        # Add discovered strategies
+        williams = detect_williams_fractals(bars_list)
+        if williams:
+            signals.append(williams)
+
+        gap = detect_gap_signal(bars_list)
+        if gap:
+            signals.append(gap)
+
+        london = detect_london_mean_reversion(bars_list)
+        if london:
+            signals.append(london)
+
+        # Sort by confidence
+        signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+        signal_hash = str([(s['strategy'], s['direction'], s['confidence']) for s in signals])
+
+        if signal_hash != self._last_signal_hash and signals:
+            if signal_hash == self._skipped_signal_hash:
+                return  # Already skipped this signal
+
+            self._skipped_signal_hash = None
+            self._alert_count += 1
+            top = signals[0]
+
+            # Print alert
+            sig_color = GREEN if top['direction'] == 'LONG' else RED
+            risk_pts = top.get('risk', abs(top['entry'] - top['stop_loss']))
+            target_pts = abs(top['take_profit'] - top['entry'])
+
+            print(f"\n{BRIGHT}{YELLOW}{'!'*60}{RESET}")
+            print(f"  {BRIGHT}NEW ALERT #{self._alert_count}{RESET} @ {pst_time}")
+            print(f"{BRIGHT}{YELLOW}{'!'*60}{RESET}")
+            print(f"  {sig_color}{BRIGHT}{top['direction']}{RESET} {top['confidence']}% [{top['strategy']}]")
+            print(f"  Entry:  {WHITE}{top['entry']:.2f}{RESET}")
+            print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_pts*50:.0f} ES / ${risk_pts*5:.0f} MES)")
+            print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_pts*50:.0f} ES / ${target_pts*5:.0f} MES)")
+            print(f"  R:R:    {top.get('rr', target_pts/risk_pts if risk_pts > 0 else 0):.1f}")
+            print(f"  Reason: {top['reasoning']}")
+            print(f"\n  {YELLOW}{BRIGHT}>>> Press [T] to TAKE or [S] to SKIP <<<{RESET}\n", flush=True)
+
+            # Audio
+            if not self.silent:
+                try:
+                    speak_signal(top, voice=self.voice, chime=True,
+                                chime_style='airport', overlap_seconds=3.0,
+                                speech_rate='+25%')
+                except Exception as e:
+                    print('\a', end='', flush=True)
+
+            # Log
+            rr = top.get('rr', target_pts/risk_pts if risk_pts > 0 else 0)
+            alert_logger.info(f"NEW ALERT | {top['direction']} {top['confidence']}% | {top['strategy']}")
+            alert_logger.info(f"  Entry: {top['entry']:.2f} | Stop: {top['stop_loss']:.2f} | Target: {top['take_profit']:.2f} | R:R {rr:.1f}")
+            for handler in alert_logger.handlers:
+                handler.flush()
+
+            # Set pending
+            self._pending_signal = {
+                'direction': top['direction'],
+                'entry': top['entry'],
+                'stop': top['stop_loss'],
+                'target': top['take_profit'],
+                'time': pst_time
+            }
+
+            self._alert_history.append({
+                'time': pst_time,
+                'direction': top['direction'],
+                'confidence': top['confidence'],
+                'entry': top['entry'],
+                'stop': top['stop_loss'],
+                'target': top['take_profit'],
+                'rr': rr
+            })
+
+        elif signals:
+            # Show current signal status
+            top = signals[0]
+            sig_color = GREEN if top['direction'] == 'LONG' else RED
+            print(f"\r{CYAN}[{pst_time}]{RESET} {session['current']} | {WHITE}{self._current_price:.2f}{RESET} | {sig_color}{top['direction']}{RESET} {top['confidence']}%    ", end='', flush=True)
+        else:
+            strats_str = '+'.join(active_strats)
+            bars_to_williams = 150 - bar_count if bar_count < 150 else 0
+            extra = f" ({bars_to_williams} bars to Williams)" if bars_to_williams > 0 else ""
+            print(f"\r{CYAN}[{pst_time}]{RESET} {session['current']} | {WHITE}{self._current_price:.2f}{RESET} | [{strats_str}] No signal{extra}    ", end='', flush=True)
+
+        self._last_signal_hash = signal_hash
+
+    def _handle_key(self, key: str):
+        """Handle keyboard input."""
+        if key == 'T' and self._pending_signal and not self._active_trade:
+            self._active_trade = self._pending_signal
+            self._pending_signal = None
+            print(f"\n{GREEN}{BRIGHT}>>> TRADE TAKEN{RESET} - Tracking {self._active_trade['direction']} @ {self._active_trade['entry']:.2f}")
+            alert_logger.info(f"USER TOOK TRADE | {self._active_trade['direction']} @ {self._active_trade['entry']:.2f}")
+
+        elif key == 'S' and self._pending_signal:
+            print(f"\n{YELLOW}>>> SKIPPED{RESET} - Waiting for next signal")
+            alert_logger.info(f"USER SKIPPED | {self._pending_signal['direction']} @ {self._pending_signal['entry']:.2f}")
+            self._skipped_signal_hash = self._last_signal_hash
+            self._pending_signal = None
+
+        elif key == 'X' and self._active_trade:
+            exit_price = self._current_price
+            if self._active_trade['direction'] == 'LONG':
+                pnl = exit_price - self._active_trade['entry']
+            else:
+                pnl = self._active_trade['entry'] - exit_price
+            pnl_color = GREEN if pnl >= 0 else RED
+            print(f"\n{MAGENTA}{BRIGHT}>>> MANUAL EXIT{RESET} @ {exit_price:.2f} | P&L: {pnl_color}{pnl:+.2f}{RESET} pts")
+            alert_logger.info(f"USER EXITED | {self._active_trade['direction']} @ {exit_price:.2f} | P&L: {pnl:+.2f} pts")
+            self._active_trade = None
+
+    def _check_trade_status(self, current_price: float):
+        """Check if active trade hit stop or target."""
+        if not self._active_trade:
+            return
+
+        pst_time = get_pst_time().strftime('%H:%M:%S')
+        session = get_session_for_ny_time()
+
+        pnl = 0
+        status = 'ACTIVE'
+
+        if self._active_trade['direction'] == 'LONG':
+            pnl = current_price - self._active_trade['entry']
+            if current_price <= self._active_trade['stop']:
+                status = 'STOPPED'
+                pnl = self._active_trade['stop'] - self._active_trade['entry']
+            elif current_price >= self._active_trade['target']:
+                status = 'TARGET'
+                pnl = self._active_trade['target'] - self._active_trade['entry']
+        else:
+            pnl = self._active_trade['entry'] - current_price
+            if current_price >= self._active_trade['stop']:
+                status = 'STOPPED'
+                pnl = self._active_trade['entry'] - self._active_trade['stop']
+            elif current_price <= self._active_trade['target']:
+                status = 'TARGET'
+                pnl = self._active_trade['entry'] - self._active_trade['target']
+
+        if status in ['STOPPED', 'TARGET']:
+            status_color = RED if status == 'STOPPED' else GREEN
+            print(f"\n{BRIGHT}{status_color}{'='*60}{RESET}")
+            print(f"  TRADE {status}! P&L: {pnl:+.2f} pts (${pnl*50:+.0f} ES)")
+            print(f"  Entry: {self._active_trade['entry']:.2f} -> Exit: {current_price:.2f}")
+            print(f"{BRIGHT}{status_color}{'='*60}{RESET}\n")
+            alert_logger.info(f"TRADE {status} | {self._active_trade['direction']} | P&L: {pnl:+.2f} pts")
+            self._active_trade = None
+            self._last_signal_hash = None
+        else:
+            pnl_color = GREEN if pnl >= 0 else RED
+            sig_color = GREEN if self._active_trade['direction'] == 'LONG' else RED
+            print(f"\r{CYAN}[{pst_time}]{RESET} {session['current']} | {WHITE}{current_price:.2f}{RESET} | {sig_color}{self._active_trade['direction']}{RESET} @ {self._active_trade['entry']:.2f} | P&L: {pnl_color}{pnl:+.2f}{RESET} pts {YELLOW}[X=exit]{RESET}    ", end='', flush=True)
+
+    def _show_pending_status(self):
+        """Show status while waiting for user input on pending signal."""
+        if not self._pending_signal:
+            return
+
+        pst_time = get_pst_time().strftime('%H:%M:%S')
+        sig_color = GREEN if self._pending_signal['direction'] == 'LONG' else RED
+
+        if self._pending_signal['direction'] == 'LONG':
+            pnl = self._current_price - self._pending_signal['entry']
+        else:
+            pnl = self._pending_signal['entry'] - self._current_price
+
+        pnl_color = GREEN if pnl >= 0 else RED
+        print(f"\r{CYAN}[{pst_time}]{RESET} {WHITE}{self._current_price:.2f}{RESET} | {sig_color}{BRIGHT}{self._pending_signal['direction']}{RESET} @ {self._pending_signal['entry']:.2f} | {pnl_color}{pnl:+.2f}{RESET} pts | {YELLOW}{BRIGHT}[T]ake [S]kip?{RESET}    ", end='', flush=True)
 
 
 def get_live_price(filepath):
@@ -132,12 +802,10 @@ def get_live_price(filepath):
 # LOGGING SETUP
 # ============================================================================
 
-ALERT_LOG_DIR = r'C:\Users\leone\ninjatrader-bot\logs'
 ALERT_LOG_FILE = os.path.join(ALERT_LOG_DIR, 'signal_alerts.log')
 
 def setup_logging():
     """Setup logging to file"""
-    os.makedirs(ALERT_LOG_DIR, exist_ok=True)
 
     # Create logger
     logger = logging.getLogger('signal_watcher')
@@ -267,40 +935,29 @@ def beep():
     print('\a', end='', flush=True)  # Terminal bell
 
 
-def format_signal(sig: dict, balance: float = None) -> str:
-    """Format a signal for display with position sizing"""
+def format_signal(sig: dict) -> str:
+    """Format a signal for display"""
     arrow = ">>>" if sig['direction'] == 'LONG' else "<<<"
 
-    # Get position sizing
-    bal = balance or CURRENT_BALANCE
-    pos_info = get_position_info(bal, STARTING_BALANCE, CONTRACT_TYPE)
-    contracts = pos_info['contracts']
-    contract_val = pos_info['contract_value']
-
     # Calculate dollar risk
-    risk_pts = sig['risk']
-    risk_dollars = risk_pts * contract_val * contracts
+    risk_pts = sig.get('risk', abs(sig['entry'] - sig['stop_loss']))
     target_pts = abs(sig['take_profit'] - sig['entry'])
-    target_dollars = target_pts * contract_val * contracts
+    rr = sig.get('rr', target_pts/risk_pts if risk_pts > 0 else 0)
 
     return f"""
 {'='*60}
   {arrow} [{sig['strategy']}] {sig['direction']} - {sig['confidence']}% confidence
 {'='*60}
-  POSITION: {contracts} {CONTRACT_TYPE} contracts (${bal:,.0f} balance)
   Entry:  {sig['entry']:.2f}
-  Stop:   {sig['stop_loss']:.2f} ({risk_pts:.2f} pts = ${risk_dollars:,.0f})
-  Target: {sig['take_profit']:.2f} ({target_pts:.2f} pts = ${target_dollars:,.0f})
-  R:R:    1:{sig['rr']:.1f}
+  Stop:   {sig['stop_loss']:.2f} ({risk_pts:.2f} pts = ${risk_pts*50:.0f} ES / ${risk_pts*5:.0f} MES)
+  Target: {sig['take_profit']:.2f} ({target_pts:.2f} pts = ${target_pts*50:.0f} ES / ${target_pts*5:.0f} MES)
+  R:R:    1:{rr:.1f}
   Reason: {sig['reasoning']}
-
-  Next scale: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']} contracts
 """
 
 
 def watch_signals(log_path: str, interval: int = 60, min_confidence: int = 70,
-                  four_hour_range: dict = None, voice: str = 'aria',
-                  silent: bool = False):
+                  voice: str = 'aria', silent: bool = False):
     """
     Continuously watch for trading signals.
 
@@ -308,7 +965,6 @@ def watch_signals(log_path: str, interval: int = 60, min_confidence: int = 70,
         log_path: Path to fractal_bot log
         interval: Seconds between checks
         min_confidence: Minimum confidence to alert
-        four_hour_range: Manual 4H range override
         voice: TTS voice (aria, guy, jenny, davis)
         silent: Disable audio alerts
     """
@@ -355,17 +1011,28 @@ def watch_signals(log_path: str, interval: int = 60, min_confidence: int = 70,
             session = get_session_for_ny_time()
             candle_info = get_4h_candle_info()
 
-            # Get signals with live price for accurate entry
+            # Get SMC signals (Order Blocks, Breakers, Inducement)
             signals = get_high_confidence_signals(
                 bars,
-                four_hour_range=four_hour_range,
                 min_confidence=min_confidence,
-                filepath=log_path,
                 live_price=current_price
             )
 
-            # Get 4H range status
-            four_hour = analyze_4hour_range_strategy(bars, four_hour_range, filepath=log_path)
+            # Add discovered strategies
+            williams = detect_williams_fractals(bars)
+            if williams:
+                signals.append(williams)
+
+            gap = detect_gap_signal(bars)
+            if gap:
+                signals.append(gap)
+
+            london = detect_london_mean_reversion(bars)
+            if london:
+                signals.append(london)
+
+            # Sort all signals by confidence
+            signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
 
             # Create hash of current signals to detect changes
             signal_hash = str([(s['strategy'], s['direction'], s['confidence']) for s in signals])
@@ -435,34 +1102,21 @@ def watch_signals(log_path: str, interval: int = 60, min_confidence: int = 70,
             # Current status
             print(f"\n{CYAN}[{pst_time} PST]{RESET} {YELLOW}{session['current']}{RESET} | Price: {WHITE}{current_price:.2f}{RESET}")
 
-            # Get position sizing
-            pos_info = get_position_info(CURRENT_BALANCE, STARTING_BALANCE, CONTRACT_TYPE)
-            contracts = pos_info['contracts']
-            contract_val = pos_info['contract_value']
-
-            print(f"\n{CYAN}POSITION SIZE:{RESET} {contracts} {CONTRACT_TYPE} @ ${CURRENT_BALANCE:,.0f} (next: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']})")
-
             if signals:
                 top = signals[0]
                 sig_color = GREEN if top['direction'] == 'LONG' else RED
-                risk_pts = top['risk']
-                risk_dollars = risk_pts * contract_val * contracts
+                risk_pts = top.get('risk', abs(top['entry'] - top['stop_loss']))
                 target_pts = abs(top['take_profit'] - top['entry'])
-                target_dollars = target_pts * contract_val * contracts
+                rr = top.get('rr', target_pts/risk_pts if risk_pts > 0 else 0)
 
                 print(f"\n{BRIGHT}CURRENT SIGNAL:{RESET}")
                 print(f"  {sig_color}{BRIGHT}{top['direction']}{RESET} {top['confidence']}% [{top['strategy']}]")
                 print(f"  Entry:  {WHITE}{top['entry']:.2f}{RESET}")
-                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_dollars:,.0f})")
-                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_dollars:,.0f})")
-                print(f"  R:R:    {top['rr']:.1f}")
+                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_pts*50:.0f} ES / ${risk_pts*5:.0f} MES)")
+                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_pts*50:.0f} ES / ${target_pts*5:.0f} MES)")
+                print(f"  R:R:    {rr:.1f}")
             else:
                 print(f"\n{WHITE}No active signal - waiting for setup{RESET}")
-
-            # 4H Range status
-            if four_hour['status'].startswith('WAITING'):
-                print(f"\n{MAGENTA}4H RANGE PENDING:{RESET} {four_hour['current_setup']['pending_signal']}")
-                print(f"  {four_hour['current_setup']['condition']}")
 
             # Alert history
             if alert_history:
@@ -504,8 +1158,7 @@ def tail_file(filepath, interval=0.02):
 
 
 def watch_realtime(log_path: str, min_confidence: int = 70,
-                   voice: str = 'aria', silent: bool = False,
-                   four_hour_range: dict = None):
+                   voice: str = 'aria', silent: bool = False):
     """
     Real-time signal watcher - tails log file for instant updates.
     Tracks active trades until stop/target is hit.
@@ -668,11 +1321,27 @@ def watch_realtime(log_path: str, min_confidence: int = 70,
                     last_signal_hash = None  # Don't check for new signals while trade active
                     continue  # Skip signal generation while trade is active
 
+            # Get SMC signals
             signals = get_high_confidence_signals(
-                bars, four_hour_range=four_hour_range, min_confidence=min_confidence,
-                filepath=log_path, live_price=current_price
+                bars, min_confidence=min_confidence,
+                live_price=current_price
             )
-            four_hour = analyze_4hour_range_strategy(bars, four_hour_range, filepath=log_path)
+
+            # Add discovered strategies
+            williams = detect_williams_fractals(bars)
+            if williams:
+                signals.append(williams)
+
+            gap = detect_gap_signal(bars)
+            if gap:
+                signals.append(gap)
+
+            london = detect_london_mean_reversion(bars)
+            if london:
+                signals.append(london)
+
+            # Sort all signals by confidence
+            signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
 
             signal_hash = str([(s['strategy'], s['direction'], s['confidence']) for s in signals])
 
@@ -682,28 +1351,19 @@ def watch_realtime(log_path: str, min_confidence: int = 70,
                 alert_count += 1
                 top = signals[0]
                 sig_color = GREEN if top['direction'] == 'LONG' else RED
-                risk_pts = top['risk']
-
-                # Get position sizing
-                pos_info = get_position_info(CURRENT_BALANCE, STARTING_BALANCE, CONTRACT_TYPE)
-                contracts = pos_info['contracts']
-                contract_val = pos_info['contract_value']
-                risk_dollars = risk_pts * contract_val * contracts
+                risk_pts = top.get('risk', abs(top['entry'] - top['stop_loss']))
                 target_pts = abs(top['take_profit'] - top['entry'])
-                target_dollars = target_pts * contract_val * contracts
 
                 # Print FIRST (immediate visual feedback)
                 print(f"\n{BRIGHT}{YELLOW}{'!'*60}{RESET}")
                 print(f"  {BRIGHT}NEW ALERT #{alert_count}{RESET} @ {pst_time}")
                 print(f"{BRIGHT}{YELLOW}{'!'*60}{RESET}")
                 print(f"  {sig_color}{BRIGHT}{top['direction']}{RESET} {top['confidence']}% [{top['strategy']}]")
-                print(f"  {CYAN}POSITION: {contracts} {CONTRACT_TYPE} @ ${CURRENT_BALANCE:,.0f}{RESET}")
                 print(f"  Entry:  {WHITE}{top['entry']:.2f}{RESET}")
-                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_dollars:,.0f})")
-                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_dollars:,.0f})")
-                print(f"  R:R:    {top['rr']:.1f}")
+                print(f"  Stop:   {RED}{top['stop_loss']:.2f}{RESET} ({risk_pts:.1f} pts = ${risk_pts*50:.0f} ES / ${risk_pts*5:.0f} MES)")
+                print(f"  Target: {GREEN}{top['take_profit']:.2f}{RESET} ({target_pts:.1f} pts = ${target_pts*50:.0f} ES / ${target_pts*5:.0f} MES)")
+                print(f"  R:R:    {top.get('rr', target_pts/risk_pts if risk_pts > 0 else 0):.1f}")
                 print(f"  Reason: {top['reasoning']}")
-                print(f"  {MAGENTA}Next scale: ${pos_info['next_threshold']:,.0f} -> {pos_info['next_contracts']} contracts{RESET}")
                 print(f"\n  {YELLOW}{BRIGHT}>>> Press [T] to TAKE or [S] to SKIP <<<{RESET}\n", flush=True)
 
                 # Audio AFTER text (so you see it while hearing it)
@@ -717,8 +1377,9 @@ def watch_realtime(log_path: str, min_confidence: int = 70,
                         print('\a', end='', flush=True)
 
                 # Log
+                rr = top.get('rr', target_pts/risk_pts if risk_pts > 0 else 0)
                 alert_logger.info(f"NEW ALERT | {top['direction']} {top['confidence']}% | {top['strategy']}")
-                alert_logger.info(f"  Entry: {top['entry']:.2f} | Stop: {top['stop_loss']:.2f} ({risk_pts:.1f}pts/${risk_pts*50:.0f}) | Target: {top['take_profit']:.2f} | R:R {top['rr']:.1f}")
+                alert_logger.info(f"  Entry: {top['entry']:.2f} | Stop: {top['stop_loss']:.2f} ({risk_pts:.1f}pts/${risk_pts*50:.0f}) | Target: {top['take_profit']:.2f} | R:R {rr:.1f}")
                 alert_logger.info(f"  Reason: {top['reasoning']}")
                 for handler in alert_logger.handlers:
                     handler.flush()
@@ -731,7 +1392,7 @@ def watch_realtime(log_path: str, min_confidence: int = 70,
                     'entry': top['entry'],
                     'stop': top['stop_loss'],
                     'target': top['take_profit'],
-                    'rr': top['rr']
+                    'rr': rr
                 })
 
                 # Set as pending - wait for user to confirm with T or skip with S
@@ -776,6 +1437,8 @@ if __name__ == '__main__':
                         help='Disable audio alerts')
     parser.add_argument('--realtime', action='store_true',
                         help='Real-time mode: tail log file instead of polling')
+    parser.add_argument('--api', action='store_true',
+                        help='API mode: connect directly to TopstepX API (no log file needed)')
     parser.add_argument('--4h-high', type=float, dest='four_h_high',
                         help='Manual 4H range high')
     parser.add_argument('--4h-low', type=float, dest='four_h_low',
@@ -783,32 +1446,32 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Build 4H range if provided
-    four_hour_range = None
-    if args.four_h_high and args.four_h_low:
-        four_hour_range = {
-            'high': args.four_h_high,
-            'low': args.four_h_low,
-            'range': args.four_h_high - args.four_h_low,
-            'start_idx': 0,
-            'end_idx': 48,
-            'bars_used': 48
-        }
+    if args.api:
+        # Direct API connection mode
+        if not TOPSTEP_API_AVAILABLE:
+            print(f"{RED}ERROR: TopstepX API not available.{RESET}")
+            print(f"Make sure topstep-trading-bot is at: {TOPSTEP_BOT_PATH}")
+            print(f"And has the required dependencies installed.")
+            sys.exit(1)
 
-    if args.realtime:
+        watcher = TopstepXSignalWatcher(
+            min_confidence=args.min_confidence,
+            voice=args.voice,
+            silent=args.silent,
+        )
+        asyncio.run(watcher.start())
+    elif args.realtime:
         watch_realtime(
             args.log,
             min_confidence=args.min_confidence,
             voice=args.voice,
-            silent=args.silent,
-            four_hour_range=four_hour_range
+            silent=args.silent
         )
     else:
         watch_signals(
             args.log,
             interval=args.interval,
             min_confidence=args.min_confidence,
-            four_hour_range=four_hour_range,
             voice=args.voice,
             silent=args.silent
         )

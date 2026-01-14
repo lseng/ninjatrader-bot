@@ -2573,30 +2573,10 @@ def get_high_confidence_signals(bars: List[Bar], daily_open: float = None,
     drt = calculate_drt(max(b.H for b in bars), min(b.L for b in bars))
     bprs = find_balanced_price_ranges(fvgs)
 
-    # 0. PRIMARY: Check CISD (Change in State of Delivery)
-    # Only take CISD signals with R:R >= 5 (backtested as most profitable)
-    # Lower win rate (27%) but massive wins (6:1 R:R) = profitable
-    cisd_signal = detect_cisd(bars, min_displacement=1.0)
-    if cisd_signal and cisd_signal.get('rr', 0) >= 5.0:
-        signals.append(cisd_signal)
+    # SMC STRATEGIES ONLY (CISD and 4H Range removed - now using discovered strategies)
+    # See live_signal_watcher.py for Williams Fractals, Gap Continuation, London Mean Reversion
 
-    # 1. Check 4-Hour Range Strategy
-    four_hour_signal = get_4hour_range_signal(bars, four_hour_range, filepath=filepath)
-    if four_hour_signal and four_hour_signal['status'] == 'SIGNAL_ACTIVE':
-        setup = four_hour_signal['setup']
-        signals.append({
-            'strategy': '4H_RANGE',
-            'direction': setup['signal'],
-            'confidence': four_hour_signal['confidence'],
-            'entry': setup['entry'],
-            'stop_loss': setup['stop_loss'],
-            'take_profit': setup['take_profit'],
-            'risk': setup['risk'],
-            'rr': setup['rr'],
-            'reasoning': f"4H Range {setup['signal']}: Price broke range and re-entered"
-        })
-
-    # 2. Check Valid Order Blocks at entry zone
+    # 1. Check Valid Order Blocks at entry zone
     valid_obs = [ob for ob in obs if ob['valid'] and ob['rules']['unmitigated']]
     for ob in valid_obs:
         # Check if price is at the OB

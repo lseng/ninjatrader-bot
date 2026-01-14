@@ -17,6 +17,9 @@ import tempfile
 import os
 import time
 
+# Suppress pygame welcome message
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+
 # Available voices
 VOICES = {
     'aria': 'en-US-AriaNeural',      # Warm female (default)
@@ -174,83 +177,86 @@ def play_chime(style: str = 'airport'):
         pass
 
 
+def _play_signal_audio(text: str, voice: str, chime_style: str,
+                       overlap_seconds: float, speech_rate: str):
+    """Internal function to play audio - runs in thread to avoid async issues."""
+    try:
+        import pygame
+        import edge_tts
+
+        # Initialize pygame mixer
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+
+        # Load chime
+        chime_sound = pygame.mixer.Sound(CHIME_FILE)
+        chime_duration = chime_sound.get_length()
+        speech_delay = max(0, chime_duration - overlap_seconds)
+
+        # Generate speech audio file
+        voice_id = VOICES.get(voice, VOICES[DEFAULT_VOICE])
+        tmp_file = os.path.join(tempfile.gettempdir(), f'trade_alert_{int(time.time()*1000)}.mp3')
+
+        async def generate_speech():
+            communicate = edge_tts.Communicate(text, voice_id, rate=speech_rate)
+            await communicate.save(tmp_file)
+
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(generate_speech())
+        loop.close()
+
+        # Play chime
+        channel = pygame.mixer.Channel(0)
+        channel.play(chime_sound)
+
+        # Wait until overlap point
+        time.sleep(speech_delay)
+
+        # Play speech
+        pygame.mixer.music.load(tmp_file)
+        pygame.mixer.music.play()
+
+        # Wait for both to finish
+        while channel.get_busy() or pygame.mixer.music.get_busy():
+            time.sleep(0.05)
+
+    except Exception as e:
+        # Silent fail - just beep
+        try:
+            import winsound
+            winsound.Beep(800, 300)
+        except:
+            print('\a', end='', flush=True)
+
+
 def speak_signal(signal: dict, voice: str = None, chime: bool = True,
                  chime_style: str = 'airport', overlap_seconds: float = 3.0,
                  speech_rate: str = "+15%"):
     """
     Full alert with optional chime + voice, with seamless overlap.
-
-    Args:
-        signal: Signal dict
-        voice: Voice name
-        chime: Play chime before speaking
-        chime_style: 'airport', 'simple', or 'alert'
-        overlap_seconds: Start speech this many seconds before chime ends (default 3)
-        speech_rate: TTS speed ("+15%" for natural fast, "+25%" for faster)
+    Runs in a separate thread to avoid blocking async event loops.
     """
+    import threading
+
     text = format_alert_text(signal)
     voice = voice or DEFAULT_VOICE
 
-    # Try airport chime + edge_tts with overlap
     if chime and chime_style == 'airport' and os.path.exists(CHIME_FILE):
+        # Run audio in thread to avoid asyncio conflicts
+        thread = threading.Thread(
+            target=_play_signal_audio,
+            args=(text, voice, chime_style, overlap_seconds, speech_rate),
+            daemon=True
+        )
+        thread.start()
+    else:
+        # No chime - just speak
         try:
-            import pygame
-            import edge_tts
-
-            # Initialize pygame mixer
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-
-            # Load chime as Sound (allows playing on separate channel)
-            chime_sound = pygame.mixer.Sound(CHIME_FILE)
-            chime_duration = chime_sound.get_length()
-
-            # Calculate when to start speech (overlap with end of chime)
-            speech_delay = max(0, chime_duration - overlap_seconds)
-
-            # Generate speech audio file first (use unique name to avoid locks)
-            voice_id = VOICES.get(voice, VOICES[DEFAULT_VOICE])
-            tmp_file = os.path.join(tempfile.gettempdir(), f'trade_alert_{int(time.time()*1000)}.mp3')
-
-            async def generate_speech():
-                communicate = edge_tts.Communicate(text, voice_id, rate=speech_rate)
-                await communicate.save(tmp_file)
-
-            asyncio.run(generate_speech())
-
-            # Play chime on channel 0
-            channel = pygame.mixer.Channel(0)
-            channel.play(chime_sound)
-
-            # Wait until overlap point
-            time.sleep(speech_delay)
-
-            # Play speech on music channel (overlaps with chime ending)
-            pygame.mixer.music.load(tmp_file)
-            pygame.mixer.music.play()
-
-            # Wait for both to finish
-            while channel.get_busy() or pygame.mixer.music.get_busy():
-                time.sleep(0.05)
-
-            # SUCCESS - don't fall through to fallback
-            return
-
-        except Exception as e:
-            print(f"[Audio error: {e}]")
-            # Fall through to simple beep only (no double voice)
-            try:
-                import winsound
-                winsound.Beep(800, 300)
-            except:
-                print('\a', end='', flush=True)
-            return
-
-    # No chime or no chime file - just speak
-    try:
-        speak_edge_tts(text, voice, speech_rate)
-    except:
-        pass
+            speak_edge_tts(text, voice, speech_rate)
+        except:
+            pass
 
 
 # Test function
